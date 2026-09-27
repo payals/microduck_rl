@@ -105,6 +105,8 @@ control limits with `--no-bam`). The mouth must have one unit-gear joint actuato
 `--no-bam` requires a position actuator. A mouth command on a scene without an
 actuated mouth is an error. The default scenes still have no articulated mouth;
 the routing tests use an artificial hinge, not stock beak geometry or dynamics.
+See the [before/after reproduction](docs/independent-mouth-replay.md) for the
+pinned released policy, headless commands and recorded results.
 
 ### Backlash variants
 

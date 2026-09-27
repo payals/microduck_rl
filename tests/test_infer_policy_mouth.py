@@ -350,6 +350,106 @@ def test_mouth_target_reaches_physics(ip, mouth_xml, policy_files, bam):
     assert positions[1] > positions[0]
 
 
+def _filtered_position_xml(ip, source, actuator_name, tmp_path):
+    spec = mujoco.MjSpec.from_file(str(source))
+    spec.meshdir = str((REPO / ip.MICRODUCK_XML).parent / "assets")
+    actuator = spec.actuator(actuator_name)
+    actuator.set_to_position(
+        kp=actuator.gainprm[0], kv=-actuator.biasprm[2], timeconst=0.02
+    )
+    xml = tmp_path / "filtered-position.xml"
+    xml.write_text(spec.to_xml())
+    return xml
+
+
+def test_filtered_policy_position_actuator_preserves_legacy_replay(
+    ip, policy_files, tmp_path
+):
+    xml = _filtered_position_xml(ip, REPO / ip.MICRODUCK_XML, "left_hip_yaw", tmp_path)
+    policy, model, data, _ = _make_policy(ip, xml, policy_files, bam=False)
+    assert model.nu == 14
+    actuator_id = model.actuator("left_hip_yaw").id
+    assert model.actuator_dyntype[actuator_id] == mujoco.mjtDyn.mjDYN_FILTEREXACT
+    activation_id = model.actuator_actadr[actuator_id]
+    assert data.act[activation_id] == 0.0
+    obs = policy.get_observations()
+    _, weights, bias = policy_files[61]
+    action = policy.infer()
+    np.testing.assert_allclose(action, obs @ weights + bias, rtol=0, atol=1e-7)
+    # Exercise only the pre-existing 14-joint API: no optional mouth methods.
+    policy.apply_action(action)
+    targets = ip.DEFAULT_POSE + action * 0.4
+    np.testing.assert_array_equal(_targets(model, data, None, JOINTS), targets)
+    mujoco.mj_step(model, data)
+    np.testing.assert_allclose(
+        data.act[activation_id],
+        targets[0] * (1 - np.exp(-model.opt.timestep / 0.02)),
+        rtol=0,
+        atol=1e-12,
+    )
+    for _ in range(11):
+        mujoco.mj_step(model, data)
+    assert np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all()
+    assert data.actuator_force[actuator_id] != 0.0
+    np.testing.assert_array_equal(_targets(model, data, None, JOINTS), targets)
+
+
+def test_filtered_mouth_position_actuator_reaches_physics(
+    ip, mouth_xml, policy_files, tmp_path
+):
+    xml = _filtered_position_xml(ip, mouth_xml, MOUTH_ACTUATOR, tmp_path)
+    policy, model, data, _ = _make_policy(ip, xml, policy_files, bam=False)
+    actuator_id = model.actuator(MOUTH_ACTUATOR).id
+    assert model.actuator_dyntype[actuator_id] == mujoco.mjtDyn.mjDYN_FILTEREXACT
+    activation_id = model.actuator_actadr[actuator_id]
+    mouth_qpos = model.joint("mouth").qposadr[0]
+    assert data.act[activation_id] == data.qpos[mouth_qpos] == 0.0
+    policy.set_mouth_target(0.2)
+    obs = policy.get_observations()
+    _, weights, bias = policy_files[61]
+    action = policy.infer()
+    np.testing.assert_allclose(action, obs @ weights + bias, rtol=0, atol=1e-7)
+    policy.apply_action(action)
+    targets = ip.DEFAULT_POSE + action * 0.4
+    np.testing.assert_array_equal(_targets(model, data, None, JOINTS), targets)
+    assert data.ctrl[actuator_id] == 0.2
+    mujoco.mj_step(model, data)
+    np.testing.assert_allclose(
+        data.act[activation_id],
+        0.2 * (1 - np.exp(-model.opt.timestep / 0.02)),
+        rtol=0,
+        atol=1e-12,
+    )
+    for _ in range(199):
+        mujoco.mj_step(model, data)
+    opened = data.qpos[mouth_qpos]
+    assert opened > 0.0
+    policy.set_mouth_target(0.0)
+    for _ in range(200):
+        mujoco.mj_step(model, data)
+    assert abs(data.qpos[mouth_qpos]) < abs(opened)
+    assert np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all()
+    np.testing.assert_array_equal(_targets(model, data, None, JOINTS), targets)
+
+
+@pytest.mark.parametrize("defect", ["gain", "bias", "integrator"])
+def test_xml_rejects_controls_that_are_not_position_targets(ip, policy_files, defect):
+    spec = mujoco.MjSpec.from_file(str(REPO / ip.MICRODUCK_XML))
+    actuator = spec.actuator("left_hip_yaw")
+    if defect == "gain":
+        actuator.gaintype = mujoco.mjtGain.mjGAIN_AFFINE
+    elif defect == "bias":
+        actuator.biasprm[1] = 0.0
+    else:
+        actuator.dyntype = mujoco.mjtDyn.mjDYN_INTEGRATOR
+    model = spec.compile()
+    data = mujoco.MjData(model)
+    with pytest.raises(ValueError, match="position actuator"):
+        ip.PolicyInference(
+            model, data, walking_onnx_path=str(policy_files[61][0]), new_cmd_obs=True
+        )
+
+
 def test_xml_mouth_respects_actuator_range_inside_joint_range(
     ip, mouth_xml, policy_files
 ):

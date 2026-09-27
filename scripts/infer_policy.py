@@ -58,7 +58,9 @@ def validate_position_actuator(model, actuator_id):
     gain = model.actuator_gainprm[actuator_id, 0]
     bias = model.actuator_biasprm[actuator_id]
     if not (
-        model.actuator_dyntype[actuator_id] == mujoco.mjtDyn.mjDYN_NONE
+        model.actuator_dyntype[actuator_id] in (
+            mujoco.mjtDyn.mjDYN_NONE, mujoco.mjtDyn.mjDYN_FILTEREXACT,
+        )  # Native position(timeconst=...) keeps position-target semantics.
         and model.actuator_gaintype[actuator_id] == mujoco.mjtGain.mjGAIN_FIXED
         and model.actuator_biastype[actuator_id] == mujoco.mjtBias.mjBIAS_AFFINE
         and gain > 0
